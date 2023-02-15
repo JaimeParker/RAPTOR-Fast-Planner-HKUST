@@ -152,6 +152,7 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 ## Your package locations should be listed before other locations
 include_directories(include)
 include_directories(
+  ${PROJECT_SOURCE_DIR}/include
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -166,6 +167,7 @@ add_library(SO3Control src/SO3Control.cpp)
 add_library(so3_control_nodelet src/so3_control_nodelet.cpp)
 
 target_link_libraries(so3_control_nodelet 
+    Eigen3::Eigen
     ${catkin_LIBRARIES}
     SO3Control
 )

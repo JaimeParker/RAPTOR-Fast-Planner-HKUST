@@ -27,5 +27,6 @@ add_library( poly_traj
     src/polynomial_traj.cpp 
     )
 target_link_libraries( poly_traj
-    ${catkin_LIBRARIES} 
+    Eigen3::Eigen
+    ${catkin_LIBRARIES}
     )  
