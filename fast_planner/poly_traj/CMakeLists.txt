@@ -28,5 +28,6 @@ add_library( poly_traj
     )
 target_link_libraries( poly_traj
     Eigen3::Eigen
+    ${EIGEN3_LIB}
     ${catkin_LIBRARIES}
     )  
