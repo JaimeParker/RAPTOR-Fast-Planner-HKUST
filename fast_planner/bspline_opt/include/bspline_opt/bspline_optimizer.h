@@ -29,6 +29,7 @@
 #include <Eigen/Eigen>
 #include <plan_env/edt_environment.h>
 #include <ros/ros.h>
+#include "nlopt.h"
 
 // Gradient and elasitc band optimization
 
