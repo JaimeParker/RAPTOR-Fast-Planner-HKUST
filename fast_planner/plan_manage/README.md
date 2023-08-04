@@ -1,146 +1,191 @@
-# Fast-Planner
+# FAST-Planner plan_manage
 
-## News
+plan_manage 是Fast-Planner的核心包，相当于程序进入的接口，启动。
 
-This package is under active maintenance. New features will be listed here.
+如何分析一个大型的ros包（含有若干个小ros package的包）：
 
-- The heading (yaw angle) planner which enables smoother change of heading direction is available.
+* 首先看cmakelist，分析exe和源代码的链接关系，第三方库的依赖关系，找到每个功能包的核心文件（如果有）
+* 其次分析数据流向，也就是分析，整个功能包完成了什么任务，需要读取什么数据，最后输出什么数据（看做函数，比较容易）；之后详细分析是在哪几个类和函数之间传递的（比较复杂），明白哪个函数和类是做什么的，完成了什么；
+* 最后详细分析某几个函数和类，总结一些基本的写法和技巧；
 
-- The online mapping algorithm is now available. It can take in depth image and camera pose pairs as input, do raycasting to update a probabilistic volumetric map, and build a Euclidean signed distance field (ESDF) for the planning system.
+## 0. CMakeList Analysis
 
-## Overview
+如果是ros noetic，需要改用std=c++14，而不是原本的11
 
-__Fast-Planner__ is a robust and efficient planning system that enables agile and fast autonomous flight for quadrotors.
-It takes in information from odometry, sensor streams (such as depth images and point cloud), and outputs high-quality trajectories within a few milliseconds.
-It can support aggressive and fully autonomous flight even in unknown and cluttered environments.
-Demonstrations about the planner have been reported on the [IEEE Spectrum](https://spectrum.ieee.org/automaton/robotics/robotics-hardware/video-friday-nasa-lemur-robot).
+第三方package依赖：
 
+* Eigen3
+* PCL1.7
 
+catkin功能包依赖：
 
-
-__Authors__: [Boyu Zhou](http://boyuzhou.net), [Fei Gao](https://ustfei.com/) and [Shaojie Shen](http://uav.ust.hk/group/) from the [HUKST Aerial Robotics Group](http://uav.ust.hk/).
-
-__Video__:
-
-<!-- add some gif of the paper video: -->
-<p align="center">
-  <img src="files/exp1.gif" width = "420" height = "237"/>
-<!-- </p> -->
-
-<!-- <p align="center"> -->
-  <img src="files/exp2.gif" width = "420" height = "237"/>
-</p>
-
-<p align="center">
-  <a href="https://youtu.be/XxBw2nmL8t0" target="_blank"><img src="files/title.png" alt="video" width="480" height="270" border="1" /></a>
-</p>
-
-This package contains the implementation of __Fast-Planner__ (in folder __fast_planner__) and a lightweight
-quadrotor simulator (in __uav_simulator__). Key components are:
-
-- __plan_env__: The online mapping algorithms. It takes in depth image (or point cloud) and camera pose (odometry) pairs as input, do raycasting to update a probabilistic volumetric map, and build an Euclidean signed distance filed (ESDF) for the planning system. 
-- __path_searching__: Front-end path searching algorithms. Currently it includes a kinodynamic version of A* algorithm that respects the dynamics of quadrotors. The standard A* is also available. 
-- __bspline_opt__: The gradient-based trajectory optimization based on B-spline trajectory representation.
-- __plan_manage__: High-level modules that schedule and call the mapping and planning algorithms. Interfaces for launching the whole system, as well as the configuration files are contained here.
-
-If you use __Fast-Planner__ for your application or research, please cite our related paper:
-
-- [__Robust and Efficient Quadrotor Trajectory Generation for Fast Autonomous Flight__](https://ieeexplore.ieee.org/document/8758904), Boyu Zhou, Fei Gao, Luqi Wang, Chuhao Liu and Shaojie Shen, IEEE Robotics and Automation Letters (RA-L), 2019.
+```cmake
+find_package(catkin REQUIRED COMPONENTS
+    roscpp
+    std_msgs
+    geometry_msgs
+    quadrotor_msgs
+    plan_env
+    path_searching
+    bspline
+    bspline_opt
+    traj_utils
+    message_generation
+    cv_bridge
+)
 ```
-@article{zhou2019robust,
-  title={Robust and efficient quadrotor trajectory generation for fast autonomous flight},
-  author={Zhou, Boyu and Gao, Fei and Wang, Luqi and Liu, Chuhao and Shen, Shaojie},
-  journal={IEEE Robotics and Automation Letters},
-  volume={4},
-  number={4},
-  pages={3529--3536},
-  year={2019},
-  publisher={IEEE}
+
+其中，quadrotor_msgs是定义的四旋翼消息类型，参考了四旋翼的微分平坦特性；其余有原ros和一些Fast-Planner包含的包；
+
+包括消息类型：FILES指此msg文件在msg文件夹下
+
+```cmake
+# Generate messages in the 'msg' folder
+add_message_files(
+    FILES
+    Bspline.msg
+)
+```
+
+添加消息的依赖：
+
+```cmake
+# Generate added messages and services with any dependencies listed here
+generate_messages(
+    DEPENDENCIES
+    std_msgs
+    geometry_msgs
+)
+```
+
+查阅定义的Bspline.msg，不难理解（因为调用了这两者消息类型）：
+
+```
+int32 order
+int64 traj_id
+time start_time
+
+float64[] knots
+geometry_msgs/Point[] pos_pts
+
+float64[] yaw_pts
+float64 yaw_dt
+```
+
+主要包含次数，轨迹的ID，开始的时间，位置节点向量，位置控制点，偏航角控制量，==偏航角导数==(偏航角的相关没怎么在论文里见到)？
+
+include directories:
+
+```cmake
+include_directories(
+    include
+    SYSTEM
+    ${catkin_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
+    ${EIGEN3_INCLUDE_DIR}
+    ${PCL_INCLUDE_DIRS}
+)
+```
+
+add executable and link libraries:
+
+```cmake
+add_executable(fast_planner_node
+    src/fast_planner_node.cpp
+    src/kino_replan_fsm.cpp
+    src/topo_replan_fsm.cpp
+    src/planner_manager.cpp
+)
+target_link_libraries(fast_planner_node 
+    ${catkin_LIBRARIES}
+)
+```
+
+除最主要的`fast_planner_node`以外，plan_manage还有另一个可执行文件：
+
+```cmake
+add_executable(traj_server src/traj_server.cpp)
+target_link_libraries(traj_server ${catkin_LIBRARIES})
+add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
+```
+
+traj_server大概率是为整体轨迹提供服务；
+
+综上，plan_manage有两个ros节点，一个是Fast planner主节点，另一个是为轨迹提供服务的traj_server节点。
+
+## 1. Data Flow and Function
+
+首先关注整个planner在仿真环境下运行时的ros节点与话题图：
+
+![rosgraph](images/rosgraph.png)
+
+关于**planner**的内容主要集中在右上角；
+
+Fast Planner，包括之后的EGO Planner，对于位姿估计和建图都大致相似，有两种方案：
+
+* 位姿估计使用里程计消息类型Odometry，地图使用点云PointCloud2类型（仿真默认使用的是这种）
+* 位姿估计使用PoseStamped类型，地图使用深度图Sensor_msg/Image类型（可能有所出入，基本是这样）
+
+其中，**fast_planner_node**订阅了位姿，地图和waypoints：
+
+* 位姿估计和建图已经清楚；
+* `waypoints_generator/waypoints`来自节点waypoint_generator，该节点除了订阅了rviz交互提供的`/move_base_simple/goal`话题（在rviz中给定目标点），还订阅了里程计话题，也就是相当于给起点和终点；
+
+**fast_planner_node**节点发布的话题有：
+
+* `/sdf_map/occupancy_inflate`，膨胀后的SDF地图
+* `planning_vis/trajectory`，应该是rviz中可视化的轨迹
+* `planning/bspline`，发布的B样条曲线轨迹
+* `/planning/new`
+* `/planning/replan`
+
+之后在**traj_server**节点，订阅的话题有：
+
+* `/planning/new`
+* `/planning/replan`
+* `/planning/bspline`
+* `/state_ukf/odom`
+
+**traj_server**节点发布的话题有：
+
+* `/planning/pos_cmd`，此话题的消息类型为定义的 *quadrotor_msgs*
+* `/planning/position_cmd_vis`，应该是在rviz中可视化离散位置控制点的
+
+### 1.1 fast_planner_node.cpp
+
+上来一个看不懂的关于signal的头文件backward.hpp
+
+```cpp
+using namespace fast_planner;
+
+int main(int argc, char** argv) {
+    ros::init(argc, argv, "fast_planner_node");
+    ros::NodeHandle nh("~");
+
+    int planner;
+    nh.param("planner_node/planner", planner, -1);
+
+    TopoReplanFSM topo_replan;
+    KinoReplanFSM kino_replan;
+
+    if (planner == 1) {
+        kino_replan.init(nh);
+    } else if (planner == 2) {
+        topo_replan.init(nh);
+    }
+
+    ros::Duration(1.0).sleep();
+    ros::spin();
+
+    return 0;
 }
 ```
 
+作者在README中提到，有两个不同的模式：
 
-## 1. Prerequisites
+* kino_replan: In this method, a kinodynamic path searching finds a safe, dynamically feasible, and minimum-time initial trajectory in the discretized control space.  Then the smoothness and clearance of the trajectory are improved by a B-spline optimization.
+* topo_replan: This method features searching for multiple trajectories in distinctive topological classes. Thanks to the strategy, the solution space is explored more thoroughly, avoiding local minima and yielding better solutions.
 
-- Our software is developed and tested in Ubuntu 16.04, [ROS Kinetic](http://wiki.ros.org/kinetic/Installation/Ubuntu). Other version may require minor modification.
+综上，fast_planner_node选择使用kino和topo的一种，之后调用其init函数；
 
-- We use [**NLopt**](https://nlopt.readthedocs.io/en/latest/NLopt_Installation) to solve the non-linear optimization problem.
+### 1.2 kino_replan_fsm.cpp
 
-- The __uav_simulator__ depends on the C++ linear algebra library __Armadillo__, which can be installed by ``` sudo apt-get install libarmadillo-dev ```.
-
-- _Optional_: If you want to run the more realistic depth camera in __uav_simulator__, installation of [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) is needed. Otherwise, a less realistic depth sensor model will be used (See section _Use GPU Depth Rendering_ below).
-
-## 2. Build on ROS
-
-After the prerequisites are satisfied, you can clone this repository to your catkin workspace and catkin_make. A new workspace is recommended:
-```
-  cd ${YOUR_WORKSPACE_PATH}/src
-  git clone https://github.com/HKUST-Aerial-Robotics/Fast-Planner.git
-  cd ../
-  catkin_make
-```
-
-### Use GPU Depth Rendering (Optional)
-
- The **local_sensing** package in __uav_simulator__ has the option of using GPU or CPU to render the depth sensor measurement. By default, it is set to CPU version in CMakeLists:
- 
- ```
- set(ENABLE_CUDA false)
- # set(ENABLE_CUDA true)
- ```
-The GPU version is recommended, because it generates depth images more like a real depth camera.
-If you want to use the GPU depth rendering, set ENABLE_CUDA to true, and also remember to change the 'arch' and 'code' flags according to your graphics card devices. You can check the right code [here](https://github.com/tpruvot/ccminer/wiki/Compatibility).
-
-```
-    set(CUDA_NVCC_FLAGS 
-      -gencode arch=compute_61,code=sm_61;
-    ) 
-``` 
-For installation of CUDA, please go to [CUDA ToolKit](https://developer.nvidia.com/cuda-toolkit)
-
-## 3. Run the Simulation
-
-Run [Rviz](http://wiki.ros.org/rviz) with our configuration firstly:
-
-```
-  <!-- go to your workspace and run: -->
-  source devel/setup.bash
-  roslaunch plan_manage rviz.launch
-```
-
-Then run the quadrotor simulator and __Fast-Planner__:
-
-```
-  <!-- open a new terminal, go to your workspace and run: -->
-  source devel/setup.bash
-  roslaunch plan_manage simulation.launch
-```
-
-Normally, you will find the randomly generated map and the drone model in ```Rviz```. At this time, you can select a goal for the drone using the ```2D Nav Goal``` tool. When a goal is set successfully, a new trajectory will be generated immediately and executed by the drone. A sample is displayed below:
-
-<!-- add some gif here -->
- <p align="center">
-  <img src="files/exp3.gif" width = "640" height = "360"/>
- </p>
-
-## 4. Use in Your Application
-
-If you have successfully run the simulation and want to use __Fast-Planner__ in your project,
-please explore the simulation.launch file.
-Important parameters that may be changed in your usage are contained and documented.
-
-Note that in our configuration, the size of depth image is 640x480. 
-For higher map fusion efficiency we do downsampling (in kino_algorithm.xml, skip_pixel = 2).
-If you use depth images with lower resolution (like 256x144), you might disable the downsampling by setting skip_pixel = 1. Also, the _depth_scaling_factor_ is set to 1000, which may need to be changed according to your device.
-
-Finally, please kindly give a STAR to this repo if it helps your research or work, thanks! :)
-
-## 5. Acknowledgements
-  We use **NLopt** for non-linear optimization.
-
-## 6. Licence
-The source code is released under [GPLv3](http://www.gnu.org/licenses/) license.
-
-
-## 7. Disclaimer
-This is research code, it is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of merchantability or fitness for a particular purpose.

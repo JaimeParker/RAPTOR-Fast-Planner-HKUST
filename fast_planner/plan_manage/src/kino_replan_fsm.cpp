@@ -29,22 +29,22 @@
 namespace fast_planner {
 
 void KinoReplanFSM::init(ros::NodeHandle& nh) {
-  current_wp_  = 0;
-  exec_state_  = FSM_EXEC_STATE::INIT;
-  have_target_ = false;
-  have_odom_   = false;
+    current_wp_  = 0;
+    exec_state_  = FSM_EXEC_STATE::INIT;
+    have_target_ = false;
+    have_odom_   = false;
 
-  /*  fsm param  */
-  nh.param("fsm/flight_type", target_type_, -1);
-  nh.param("fsm/thresh_replan", replan_thresh_, -1.0);
-  nh.param("fsm/thresh_no_replan", no_replan_thresh_, -1.0);
+    /*  fsm param  */
+    nh.param("fsm/flight_type", target_type_, -1);
+    nh.param("fsm/thresh_replan", replan_thresh_, -1.0);
+    nh.param("fsm/thresh_no_replan", no_replan_thresh_, -1.0);
 
-  nh.param("fsm/waypoint_num", waypoint_num_, -1);
-  for (int i = 0; i < waypoint_num_; i++) {
-    nh.param("fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
-    nh.param("fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
-    nh.param("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
-  }
+    nh.param("fsm/waypoint_num", waypoint_num_, -1);
+    for (int i = 0; i < waypoint_num_; i++) {
+        nh.param("fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
+        nh.param("fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
+        nh.param("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
+    }
 
   /* initialize main modules */
   planner_manager_.reset(new FastPlannerManager);
