@@ -189,3 +189,142 @@ int main(int argc, char** argv) {
 
 ### 1.2 kino_replan_fsm.cpp
 
+#### 1.2.1 init
+
+作者在代码中注释的很清楚，整个**init**函数分三个部分：
+
+* fsm param，读取launch文件中的参数，包括flight type和waypoint等
+* init main modules，初始化planner_manager和visualization，这两个各自有一个类
+* callback，详细定义若干publisher和subscriber
+
+其中定义的**publisher**为下述三个话题：
+
+| 话题                | 消息类型             |
+| ------------------- | -------------------- |
+| `/planning/replan`  | std_msgs::Empty      |
+| `/planning/new`     | std_msgs::Empty      |
+| `/planning/bspline` | plan_manage::Bspline |
+
+其中plan_manage::Bspline是创建了Bspline.msg后编译生成的~/catkin_ws/devel/include/plan_manage/Bspline.h，位于ros工作空间devel目录下的头文件。
+
+定义的**subscriber**为下述两个话题：
+
+| 话题                            | 回调函数                        | obj  |
+| ------------------------------- | ------------------------------- | ---- |
+| `/waypoint_generator/waypoints` | KinoReplanFSM::waypointCallback | this |
+| `/odom_world`                   | KinoReplanFSM::odometryCallback | this |
+
+这两个回调函数都没有主程序的入口，入口可能在planner_manager处；
+
+在头文件中有：
+
+```cpp
+    /* planning utils */
+    FastPlannerManager::Ptr planner_manager_;
+    PlanningVisualization::Ptr visualization_;
+```
+
+但是这两个均属于别的ros包；
+
+除了这两个回调函数，代码中还出现了两个callback：
+
+```cpp
+    /* callback */
+    exec_timer_   = nh.createTimer(ros::Duration(0.01), &KinoReplanFSM::execFSMCallback, this);
+    safety_timer_ = nh.createTimer(ros::Duration(0.05), &KinoReplanFSM::checkCollisionCallback, this);
+```
+
+**ros::Timer**：
+
+> [roscpp](http://wiki.ros.org/roscpp)'s Timers let you schedule a callback to happen at a specific rate through the same [callback queue mechanism](http://wiki.ros.org/roscpp/Overview/Callbacks and Spinning) used by subscription, service, etc. callbacks.
+>
+> Timers are **not** a realtime thread/kernel replacement, rather they are useful for things that do not have hard realtime requirements.
+>
+> from: <http://wiki.ros.org/roscpp/Overview/Timers>
+
+Timer的用法类似Rate.sleep()，但又不完全相同；Timer的构造如下：
+
+```cpp
+ros::Timer ros::NodeHandle::createTimer(ros::Duration period, <callback>, bool oneshot = false);
+```
+
+* period: This is the period between calls to the timer callback. For example, if this is ros::Duration(0.1), the callback will be scheduled for every 1/10th of a second.
+* callback: This is the callback to be called -- it may be a function, class method or functor object. 
+* oneshot: Specifies whether or not the timer is a one-shot timer. If so, it will only fire once. Otherwise it will be re-scheduled continuously until it is stopped.
+
+因此这两个回调函数是0.01和0.05秒就回调一次的。
+
+#### 1.2.2 waypointCallback
+
+先关注**waypointCallback**函数，waypoints来自waypoint_generator节点；
+
+```cpp
+    cout << "Triggered!" << endl;
+    trigger_ = true;
+
+    if (target_type_ == TARGET_TYPE::MANUAL_TARGET) {
+        end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, 1.0;
+
+    } else if (target_type_ == TARGET_TYPE::PRESET_TARGET) {
+        end_pt_(0)  = waypoints_[current_wp_][0];
+        end_pt_(1)  = waypoints_[current_wp_][1];
+        end_pt_(2)  = waypoints_[current_wp_][2];
+        current_wp_ = (current_wp_ + 1) % waypoint_num_;
+    }
+```
+
+如果使用的是2D nav goal，则将TARGET_TYPE设置为MANUAL_TARGET，否则则按照航路点设置为PRESET_TARGET，再进行数据读取；数据最终读取到类的成员`end_pt_`中：
+
+```cpp
+    Eigen::Vector3d end_pt_, end_vel_;  
+```
+
+由于rviz的接口2D nav goal无法选择点的z坐标，因此作者在这里给出了z=1.0；所以做实验时会发现如果无人机的初始z小于1.0，其总会提升高度；
+
+接下来是画目标点，终止速度置零以及给标志位，证明已有target：
+
+```cpp
+    visualization_->drawGoal(end_pt_, 0.3, Eigen::Vector4d(1, 0, 0, 1.0));
+    end_vel_.setZero();
+    have_target_ = true;
+```
+
+enum项的定义为，分别代表planner不同的阶段：
+
+```cpp
+    /* ---------- flag ---------- */
+    enum FSM_EXEC_STATE { INIT, WAIT_TARGET, GEN_NEW_TRAJ, REPLAN_TRAJ, EXEC_TRAJ, REPLAN_NEW };
+    enum TARGET_TYPE { MANUAL_TARGET = 1, PRESET_TARGET = 2, REFENCE_PATH = 3 };
+```
+
+之后调了一个changeFSMExecState函数，该函数输出的是planner当前的状态，就是上述FSM_EXEC_STATE中的；
+
+```cpp
+    if (exec_state_ == WAIT_TARGET)
+        changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
+    else if (exec_state_ == EXEC_TRAJ)
+        changeFSMExecState(REPLAN_TRAJ, "TRIG");
+```
+
+#### 1.2.3 odometryCallback
+
+该回调函数完成两个功能，当里程计话题收到消息时：
+
+* 将该消息的pose，twist，orientation值赋值给类成员`odom_pos_`，`odom_vel_`，和`odom_orient_`
+* flag位`have_odom_=true`，标志位置正
+
+#### 1.2.4 execFSMCallback
+
+注意类成员函数中的static类型变量，其值可以视为全局变量，因此该函数的开头实现了一个简短的延迟等待：
+
+```cpp
+    static int fsm_num = 0;
+    fsm_num++;
+    if (fsm_num == 100) {
+        printFSMExecState();
+        if (!have_odom_) cout << "no odom." << endl;
+        if (!trigger_) cout << "wait for goal." << endl;
+        fsm_num = 0;
+    }
+```
+
